@@ -1,0 +1,133 @@
+<!doctype html><html lang=en-US><head><meta charset=UTF-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Podman, Caddy, and Lego: DNS-01 Challenges without having to use xCaddy | David Lozano</title><meta name=description content="Takes only a few moments and ensures you don't have to rebuild with the right DNS plugins"><link rel=stylesheet href=/css/bundle.min.2aefb55158be2701c18e8760439353e3fdd90795f5226f311a61dd9adac88755.css integrity="sha256-Ku+1UVi+JwHBjodgQ5NT4/3ZB5X1Im8xGmHdmtrIh1U="><link rel=stylesheet href=/katex.min_13050727348041349036.min.432b26810870649ecd4f076a8e6a9c362b49c8667b26b90c1fa88cbcdb711792.css integrity="sha256-QysmgQhwZJ7NTwdqjmqcNitJyGZ7JrkMH6iMvNtxF5I="><link rel=alternate type=application/atom+xml title="Blog Feed" href=/blog/index.xml><link rel=sitemap type=application/xml title=Sitemap href=/sitemap.xml></head><body><header class=site-header><p class=site-name><a href=https://pdlozano.com/>David Lozano</a></p><nav class=site-nav><ul><li><a href=/>Home</a></li><li><a href=/blog/>Blog</a></li><li><a href=/resume/>Resume</a></li></ul></nav></header><main class=site-content><article><header class=article-header><h1>Podman, Caddy, and Lego: DNS-01 Challenges without having to use xCaddy</h1><div class=meta><p class=article-publish>Published on 2026-08-05</p><p class=tag><a href=/%20/tags/self-hosting>self-hosting</a></p><p class=tag><a href=/%20/tags/tutorial>tutorial</a></p></div><p class=article-description>Takes only a few moments and ensures you don't have to rebuild with the right DNS plugins</p></header><div class=content><p>Caddy is great and one of the main benefits it has is the automatic SSL. Unfortunately, that fails when I needed DNS challenges. The common solution is to rebuild Caddy with the proper plugins but I didn&rsquo;t like this as it meant I had to watch out for updates. There are also unofficial builds but I don&rsquo;t want to risk that.</p><p>This got me exploring other ways to get the certificates through Let&rsquo;s Encrypt. I scrolled through their ACME clients and got into Lego.</p><h2 id=quadlets>Quadlets</h2><p>I use Podman Quadlets and my existing Caddy is in a pod. The architecture is that it has its own Tailscale container and I connect to the container using Tailscale.</p><p>Ensure first that all folders are available (otherwise you will encounter errors).</p><div class=highlight><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>mkdir -p ~/containers/caddy/lego ~/containers/caddy/state
+</span></span><span class=line><span class=cl>touch ~/containers/caddy/Caddyfile
+</span></span></code></pre></div><p>The command above creates the prerequisite files and folders for the below to work.</p><div class=highlight><pre tabindex=0 class=chroma><code class=language-ini data-lang=ini><span class=line><span class=cl><span class=c1># ~/.config/containers/systemd/caddy/caddy.pod</span>
+</span></span><span class=line><span class=cl><span class=k>[Unit]</span>
+</span></span><span class=line><span class=cl><span class=na>Description</span><span class=o>=</span><span class=s>Caddy Pod</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Pod]</span>
+</span></span><span class=line><span class=cl><span class=na>PodmanArgs</span><span class=o>=</span><span class=s>--hostname=tailscale-containers</span>
+</span></span><span class=line><span class=cl><span class=na>AddHost</span><span class=o>=</span><span class=s>host.containers.internal:host-gateway</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Install]</span>
+</span></span><span class=line><span class=cl><span class=na>WantedBy</span><span class=o>=</span><span class=s>default.target</span>
+</span></span></code></pre></div><p>The above is the pod which everyone connects to (except for Lego - more on that later). The app and the Tailscale will be in the same network since they&rsquo;re in the same pod.</p><div class=highlight><pre tabindex=0 class=chroma><code class=language-ini data-lang=ini><span class=line><span class=cl><span class=c1># ~/.config/containers/systemd/caddy/caddy-app.container</span>
+</span></span><span class=line><span class=cl><span class=k>[Unit]</span>
+</span></span><span class=line><span class=cl><span class=na>Description</span><span class=o>=</span><span class=s>Caddy App</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Container]</span>
+</span></span><span class=line><span class=cl><span class=na>Pod</span><span class=o>=</span><span class=s>caddy.pod</span>
+</span></span><span class=line><span class=cl><span class=na>Image</span><span class=o>=</span><span class=s>docker.io/caddy:alpine</span>
+</span></span><span class=line><span class=cl><span class=na>AutoUpdate</span><span class=o>=</span><span class=s>registry</span>
+</span></span><span class=line><span class=cl><span class=na>Volume</span><span class=o>=</span><span class=s>%h/containers/caddy/Caddyfile:/etc/caddy/Caddyfile:ro,Z</span>
+</span></span><span class=line><span class=cl><span class=na>Volume</span><span class=o>=</span><span class=s>%h/containers/caddy/lego:/certs:ro,z</span>
+</span></span><span class=line><span class=cl><span class=na>HealthCmd</span><span class=o>=</span><span class=s>curl -f http://localhost:2019/config/ || exit 1</span>
+</span></span><span class=line><span class=cl><span class=na>HealthInterval</span><span class=o>=</span><span class=s>30s</span>
+</span></span><span class=line><span class=cl><span class=na>HealthTimeout</span><span class=o>=</span><span class=s>5s</span>
+</span></span><span class=line><span class=cl><span class=na>HealthRetries</span><span class=o>=</span><span class=s>3</span>
+</span></span><span class=line><span class=cl><span class=na>HealthStartPeriod</span><span class=o>=</span><span class=s>10s</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Service]</span>
+</span></span><span class=line><span class=cl><span class=na>Restart</span><span class=o>=</span><span class=s>always</span>
+</span></span></code></pre></div><p>Above is the actual Caddy app. What&rsquo;s noted is that <code>Volume=%h/containers/caddy/lego:/certs:ro,z</code> MUST have <code>z</code> (lowercase) because it is shared with another container.</p><div class=highlight><pre tabindex=0 class=chroma><code class=language-ini data-lang=ini><span class=line><span class=cl><span class=c1># ~/.config/containers/systemd/caddy/caddy-tailscale.container</span>
+</span></span><span class=line><span class=cl><span class=k>[Unit]</span>
+</span></span><span class=line><span class=cl><span class=na>Description</span><span class=o>=</span><span class=s>Tailscale</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Container]</span>
+</span></span><span class=line><span class=cl><span class=na>Pod</span><span class=o>=</span><span class=s>caddy.pod</span>
+</span></span><span class=line><span class=cl><span class=na>Image</span><span class=o>=</span><span class=s>docker.io/tailscale/tailscale:stable</span>
+</span></span><span class=line><span class=cl><span class=na>AutoUpdate</span><span class=o>=</span><span class=s>registry</span>
+</span></span><span class=line><span class=cl><span class=na>Volume</span><span class=o>=</span><span class=s>%h/containers/caddy/state:/var/lib/tailscale:Z</span>
+</span></span><span class=line><span class=cl><span class=na>AddCapability</span><span class=o>=</span><span class=s>net_admin</span>
+</span></span><span class=line><span class=cl><span class=na>AddDevice</span><span class=o>=</span><span class=s>/dev/net/tun:/dev/net/tun</span>
+</span></span><span class=line><span class=cl><span class=na>Environment</span><span class=o>=</span><span class=s>TS_EXTRA_ARGS=--advertise-tags=tag:container</span>
+</span></span><span class=line><span class=cl><span class=na>Environment</span><span class=o>=</span><span class=s>TS_STATE_DIR=/var/lib/tailscale</span>
+</span></span><span class=line><span class=cl><span class=na>Environment</span><span class=o>=</span><span class=s>TS_USERSPACE=false</span>
+</span></span><span class=line><span class=cl><span class=na>Environment</span><span class=o>=</span><span class=s>TS_ENABLE_HEALTH_CHECK=true</span>
+</span></span><span class=line><span class=cl><span class=na>Environment</span><span class=o>=</span><span class=s>TS_LOCAL_ADDR_PORT=127.0.0.1:4000</span>
+</span></span><span class=line><span class=cl><span class=na>Secret</span><span class=o>=</span><span class=s>ts-container,type=env,target=TS_AUTHKEY</span>
+</span></span><span class=line><span class=cl><span class=na>HealthCmd</span><span class=o>=</span><span class=s>wget --no-verbose --tries=1 --spider http://127.0.0.1:4000/healthz || exit 1</span>
+</span></span><span class=line><span class=cl><span class=na>HealthInterval</span><span class=o>=</span><span class=s>10s</span>
+</span></span><span class=line><span class=cl><span class=na>HealthRetries</span><span class=o>=</span><span class=s>3</span>
+</span></span><span class=line><span class=cl><span class=na>HealthStartPeriod</span><span class=o>=</span><span class=s>5s</span>
+</span></span><span class=line><span class=cl><span class=na>HealthTimeout</span><span class=o>=</span><span class=s>3s</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Service]</span>
+</span></span><span class=line><span class=cl><span class=na>Restart</span><span class=o>=</span><span class=s>always</span>
+</span></span></code></pre></div><p>Above is Tailscale which contains nothing special.</p><div class=highlight><pre tabindex=0 class=chroma><code class=language-ini data-lang=ini><span class=line><span class=cl><span class=c1># ~/.config/containers/systemd/caddy/caddy-lego.container</span>
+</span></span><span class=line><span class=cl><span class=k>[Unit]</span>
+</span></span><span class=line><span class=cl><span class=na>Description</span><span class=o>=</span><span class=s>Lego</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Container]</span>
+</span></span><span class=line><span class=cl><span class=na>Image</span><span class=o>=</span><span class=s>docker.io/goacme/lego:v5</span>
+</span></span><span class=line><span class=cl><span class=na>AutoUpdate</span><span class=o>=</span><span class=s>registry</span>
+</span></span><span class=line><span class=cl><span class=na>Secret</span><span class=o>=</span><span class=s>cf_api_token,type=env,target=CLOUDFLARE_DNS_API_TOKEN</span>
+</span></span><span class=line><span class=cl><span class=na>Exec</span><span class=o>=</span><span class=s>run --accept-tos \
+</span></span></span><span class=line><span class=cl><span class=s>    --dns cloudflare \
+</span></span></span><span class=line><span class=cl><span class=s>    --path /certificates \
+</span></span></span><span class=line><span class=cl><span class=s>    --dns.resolvers 1.1.1.1:53 \
+</span></span></span><span class=line><span class=cl><span class=s>    --dns.resolvers 2606:4700:4700::1111:53 \
+</span></span></span><span class=line><span class=cl><span class=s>    -d &#39;*.pdlozano.com&#39; \
+</span></span></span><span class=line><span class=cl><span class=s>    -d &#39;pdlozano.com&#39;</span>
+</span></span><span class=line><span class=cl><span class=na>Volume</span><span class=o>=</span><span class=s>%h/containers/caddy/lego:/certificates:z</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Service]</span>
+</span></span><span class=line><span class=cl><span class=na>Type</span><span class=o>=</span><span class=s>oneshot</span>
+</span></span><span class=line><span class=cl><span class=na>ExecStartPost</span><span class=o>=</span><span class=s>podman exec systemd-caddy-app caddy reload --config=/etc/caddy/Caddyfile</span>
+</span></span></code></pre></div><p>Then there is Lego which is NOT connected to the Pod. This is a service purely to get certificates and update them. It does not communicate at all with Caddy or Tailscale so there is no need to expose this to the same pod.</p><p>Also note that everytime the Lego container runs, it reloads Caddy. This means no downtime at all if the certificates are new.</p><p>Note that if you follow my file naming conventions in the comment, the name for the container should be <code>systemd-caddy-app</code>. If you have another name, you should double check to ensure it works.</p><h2 id=systemd-timer>Systemd Timer</h2><p>Caddy normally handles the renewal of certificates. For lego though, we must set it to renew it. I added the following Systemd timer below to do so. It runs daily at 0100H. While it does run daily, it only renews when 2/3 of the certificate lifetime is complete so there&rsquo;s no need to worry about rate limits in Let&rsquo;s Encrypt.</p><div class=highlight><pre tabindex=0 class=chroma><code class=language-ini data-lang=ini><span class=line><span class=cl><span class=c1># ~/.config/systemd/user/caddy-lego.timer</span>
+</span></span><span class=line><span class=cl><span class=k>[Unit]</span>
+</span></span><span class=line><span class=cl><span class=na>Description</span><span class=o>=</span><span class=s>Update Caddy Certificates (Daily)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Timer]</span>
+</span></span><span class=line><span class=cl><span class=na>OnCalendar</span><span class=o>=</span><span class=s>*-*-* 01:00:00</span>
+</span></span><span class=line><span class=cl><span class=na>Persistent</span><span class=o>=</span><span class=s>true</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Install]</span>
+</span></span><span class=line><span class=cl><span class=na>WantedBy</span><span class=o>=</span><span class=s>timers.target</span>
+</span></span></code></pre></div><p>Just make sure to enable it:</p><div class=highlight><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>systemctl --user daemon-reload
+</span></span><span class=line><span class=cl>systemctl --user start --now caddy-lego.timer
+</span></span></code></pre></div><h2 id=caddy>Caddy</h2><p>Now, we need to tell Caddy where to find the certificates. Fortunately, that&rsquo;s a simple <code>certificate</code>. I also added HSTS and compression.</p><p>If you follow my volume above, the location for the certificates will be in <code>/certs/certificates/</code> IN the Caddy container. In your actual server, it will be in <code>~/containers/caddy/lego/certificates</code>. Ensure you get the correct one because your browser will spew out errors otherwise.</p><div class=highlight><pre tabindex=0 class=chroma><code class=language-txt data-lang=txt><span class=line><span class=cl>(certificate) {
+</span></span><span class=line><span class=cl>    tls /certs/certificates/_.pdlozano.com.crt /certs/certificates/_.pdlozano.com.key
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>(compression) {
+</span></span><span class=line><span class=cl>    encode gzip zstd
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>(hardening) {
+</span></span><span class=line><span class=cl>    header {
+</span></span><span class=line><span class=cl>        Strict-Transport-Security &#34;max-age=31536000; includeSubDomains; preload&#34;
+</span></span><span class=line><span class=cl>        X-Content-Type-Options &#34;nosniff&#34;
+</span></span><span class=line><span class=cl>        X-Frame-Options &#34;SAMEORIGIN&#34;
+</span></span><span class=line><span class=cl>        Referrer-Policy &#34;strict-origin-when-cross-origin&#34;
+</span></span><span class=line><span class=cl>    }
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>(local-wildcard) {
+</span></span><span class=line><span class=cl>    @{args[0]} host {args[0]}.pdlozano.com
+</span></span><span class=line><span class=cl>    handle @{args[0]} {
+</span></span><span class=line><span class=cl>        import hardening
+</span></span><span class=line><span class=cl>        import cache-static
+</span></span><span class=line><span class=cl>        reverse_proxy {args[1]}
+</span></span><span class=line><span class=cl>    }
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>pdlozano.com {
+</span></span><span class=line><span class=cl>    import certificate
+</span></span><span class=line><span class=cl>    import compression
+</span></span><span class=line><span class=cl>    import hardening
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    reverse_proxy host.containers.internal:8000
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>*.pdlozano.com {
+</span></span><span class=line><span class=cl>    import certificate
+</span></span><span class=line><span class=cl>    import compression
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    import local-wildcard site1 host.containers.internal:8001
+</span></span><span class=line><span class=cl>    import local-wildcard site2 host.containers.internal:8002
+</span></span><span class=line><span class=cl>    import local-wildcard site3 host.containers.internal:5003
+</span></span><span class=line><span class=cl>    import local-wildcard site4 host.containers.internal:8004
+</span></span><span class=line><span class=cl>}
+</span></span></code></pre></div><p>Now, a simple restart of the pod should work.</p><hr><p>Overall, I dedicated 2 hours of my life to do this to avoid having to rebuild Caddy. I didn&rsquo;t want to keep up with it so the solution was a simple sidecar service to handle the DNS challenge.</p></div><footer class=article-footer><p>This post was written by me - David. I don't track anything on this page so if you found this helpful, I
+would honestly appreciate you do it personally to me through email: david@davidlozano.me.</p><p>By day, I am a hardware engineer designing PCBs (<a href=https://assets.pdlozano.com/Resume.pdf>my latest
+resume is here</a>). I write here mainly to let out my mind and to give my thoughts on various topics.</p></footer></article></main><footer class=site-footer><p>Copyright &copy; 2023 - 2026 | All rights reserved</p><p><a href=mailto:david@davidlozano.me>david@davidlozano.me</a></p></footer></body></html>
